@@ -1,0 +1,24 @@
+# Coding files details 
+
+
+1) vqc_4feature_UNSW_v8 .py
+This code files helps to train the training, Validation and Testing for all the 112 configurations across all three backends for each dataset. 
+
+2) rename_display_names.py
+After training to match the model names as per the article this file was used to map the encoding and ansatz names as per article.
+
+3) run_levene_only.py (for Homogeneity) run_anova_all_backends.py (For one-way ANOVA) run_two_way_anova.py (For two-way ANOVA)
+
+4) rename_bootstrap_ci_B.py (Bootstrap study code) vqc_uncertainty_v4.py (Uncertainty study code) build_reliability_table_v3.py (prepare the reliability combined table from bootstrap result and uncertainty results)  build_jsc_score_table.py (for Preparing the JSC score and ranking)
+
+5) run_unknown_attack_detection.py (This code is for detecting the Unknown attacks) plot_unknown_attack_results.py (it plots the bar plot for the TPR for Unknown attack detection)
+
+6) vqc_noise_study_v1.py (This code is for noise study)  plot_noise_split.py (Plot Noise study results for each metric)
+
+
+
+# Result files details
+
+Result folder contains the separate folder for each dataset. Inside the dataset named result folder has three separate folder for each backend. 
+only default.mixed folder has additional output provided such as results on different subsets of training, ANOVA study results, Bootstrap and Uncertainity result, combined reliability table, JSC score and Ranking results.
+
