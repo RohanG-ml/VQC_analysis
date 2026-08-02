@@ -1,4 +1,23 @@
 """
+run_unknown_attack_detection_v3.py
+
+Changes from the original:
+  1. STRICT checkpoint matching. The folder must be exactly
+     {fs}_{train_size}_{test_split}. No fallback to other folders,
+     because loading a model trained on a different train_size
+     silently produces wrong weights and a wrong threshold.
+  2. RENAME_REV extended with custom_ansatz_1, strongly_entangling
+     and the capitalised variants that previously caused silent skips.
+  3. SANITY CHECK: recomputes test-set F1 with the loaded weights and
+     compares against result.json. A mismatch aborts that model rather
+     than reporting invalid numbers.
+  4. Probability distribution diagnostic, so a zero detection rate can
+     be attributed to threshold transfer rather than a code fault.
+  5. Integrity check at the end listing any selected model that did
+     not produce a result.
+
+Original description follows.
+
 run_unknown_attack_detection.py
 Loads the top-N models from the JSC score table, evaluates each on the
 unknown attack dataset, and reports Detection Rate (TPR) per attack subtype.
@@ -20,15 +39,18 @@ Run:
       --vqc_script /home/nvidia/21PHD1192/qml_id2/UNSW_code/vqc_4feature_UNSW_v8.py
 """
 
-# ── CRITICAL: disable ALL GPUs before any import ─────────────────────────
-# Bus error (core dumped) on GPU servers is almost always caused by
-# PyTorch or PennyLane initialising CUDA during import, even when the
-# code runs CPU-only. Hide all GPUs first.
+# ── NOTE: set CUDA_VISIBLE_DEVICES="" at SHELL level before running ────────
+# e.g.:  CUDA_VISIBLE_DEVICES="" python run_unknown_attack_detection.py ...
+# Setting it inside Python is too late — torch's C++ layer initialises
+# CUDA before Python code runs. The shell-level env var is inherited first.
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-os.environ["OMP_NUM_THREADS"]      = "4"
-os.environ["MKL_NUM_THREADS"]      = "4"
-print('[STARTUP] CUDA disabled — CPU-only mode', flush=True)
+# Attempt in-Python disable as a secondary measure (helps in some configs)
+if "CUDA_VISIBLE_DEVICES" not in os.environ:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ.setdefault("OMP_NUM_THREADS", "4")
+os.environ.setdefault("MKL_NUM_THREADS", "4")
+
+print(f"[STARTUP] CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES','not set')!r} — CPU-only mode", flush=True)
 
 import argparse, json, sys, re
 print("[STARTUP] standard libs imported", flush=True)
@@ -79,23 +101,51 @@ def parse_drm_vqc(drm_vqc_str):
         "ZZ_Feature_Map_style":"zz_feature_map","Amplitude_Embedding":"amplitude_embedding",
         "Custom_H_RY_RZ":"custom_h_ry_rz","EfficientSU2_like":"efficient_su2_like",
         "Real_Amplitude_like":"real_amplitudes",
+        # ── keys that were missing and caused silent skips ──
+        "custom_ansatz_1":"custom_ansatz_1",
+        "strongly_entangling":"strongly_entangling",
+        "custom_Ansatz_1":"custom_ansatz_1",
+        "IQP_style_Encoding":"iqp_embedding",
+        "ZZ_Feature_Map_Style":"zz_feature_map",
     }
     enc_internal = RENAME_REV.get(enc, enc)
     ans_internal = RENAME_REV.get(ans, ans)
     return fs, enc_internal, ans_internal
 
 def find_checkpoint(results_root, fs, train_size, test_split, ansatz, encoding):
-    """Find best_model.pt for a given model config."""
-    root = Path(results_root)
-    run_key = f"{ansatz}__{encoding}"
-    # subfolder pattern: {fs}_{train_size}_{test_split}
-    candidates = sorted(root.glob(f"{fs}_{train_size}_{test_split}"))
-    if not candidates:
-        candidates = sorted(root.glob(f"{fs}_*{test_split}*"))
-    for sd in candidates:
-        pt = sd / f"{run_key}_best_model.pt"
+    """Find best_model.pt for a given model config.
+
+    STRICT matching only. Never falls back to a folder with a different
+    train_size or test_split, because loading a model trained on different
+    data silently produces wrong weights and a wrong threshold.
+    """
+    root     = Path(results_root)
+    run_key  = f"{ansatz}__{encoding}"
+    exact_sd = root / f"{fs}_{train_size}_{test_split}"
+
+    if exact_sd.is_dir():
+        pt = exact_sd / f"{run_key}_best_model.pt"
         if pt.exists():
-            return pt, sd / f"{run_key}_result.json"
+            print(f"  [CKPT] Folder : {exact_sd.name}")
+            print(f"  [CKPT] Run key: {run_key}")
+            return pt, exact_sd / f"{run_key}_result.json"
+
+        # Folder exists but this run_key is absent -> show what IS there
+        present = sorted(p.name.replace("_best_model.pt", "")
+                         for p in exact_sd.glob("*_best_model.pt"))
+        print(f"  [CKPT] FAIL: run_key {run_key!r} not in {exact_sd.name}/")
+        print(f"  [CKPT] {len(present)} checkpoints present:")
+        for k in present:
+            near = "   <-- similar" if (ansatz in k or encoding in k) else ""
+            print(f"           {k}{near}")
+        return None, None
+
+    print(f"  [CKPT] FAIL: folder does not exist: {exact_sd}")
+    siblings = sorted(p.name for p in root.glob(f"{fs}_*") if p.is_dir())
+    print(f"  [CKPT] Folders starting with {fs!r}: {siblings}")
+    print(f"  [CKPT] Expected train_size={train_size}, "
+          f"test_split={test_split!r}. Adjust --train_size / --test_split "
+          f"if the folder name above differs.")
     return None, None
 
 def predict_proba_cpu(model, X, batch_size=256):
@@ -225,15 +275,97 @@ def main():
         scaler    = MinMaxScaler(feature_range=(0.0, np.pi))
         scaler.fit(train_df[feat_cols].values.astype(np.float32))
 
+        # ── SANITY CHECK: reproduce the test-set F1 from result.json ────
+        # If the loaded weights are the intended ones, evaluating on the
+        # SAME test set with the SAME tau must reproduce the stored F1.
+        # A mismatch means the wrong checkpoint was loaded, which would
+        # make every downstream number meaningless.
+        sanity_ok = None
+        try:
+            test_csv = (Path(args.package_root) / fs /
+                        args.test_split / "test.csv")
+            if not test_csv.exists():
+                alt = Path(args.package_root) / fs / f"{args.test_split}.csv"
+                test_csv = alt if alt.exists() else test_csv
+
+            if test_csv.exists() and res_path and res_path.exists():
+                from sklearn.metrics import f1_score
+                t_df   = pd.read_csv(test_csv)
+                t_cols = [c for c in feat_cols if c in t_df.columns]
+                lab_c  = next((c for c in ["Label","label","y"]
+                               if c in t_df.columns), None)
+                if t_cols and lab_c:
+                    X_t     = scaler.transform(
+                                t_df[t_cols].values.astype(np.float32))
+                    p_t     = predict_proba_cpu(model, X_t)
+                    pred_t  = (p_t >= tau).astype(int)
+                    f1_now  = f1_score(t_df[lab_c].values, pred_t,
+                                       zero_division=0)
+                    res_j   = json.load(open(res_path))
+                    f1_json = float(res_j.get("metrics", {}).get("f1", -1))
+                    delta   = abs(f1_now - f1_json)
+                    sanity_ok = delta < 0.01
+
+                    print(f"  [SANITY] test F1 recomputed = {f1_now:.4f}")
+                    print(f"  [SANITY] test F1 in json    = {f1_json:.4f}")
+                    if sanity_ok:
+                        print(f"  [SANITY] MATCH (delta={delta:.4f}) "
+                              f"-> correct checkpoint loaded")
+                    else:
+                        print(f"  [SANITY] *** MISMATCH (delta={delta:.4f}) ***")
+                        print(f"  [SANITY] The loaded weights do NOT reproduce "
+                              f"the stored result.")
+                        print(f"  [SANITY] Checkpoint : {ck_path}")
+                        print(f"  [SANITY] result.json: {res_path}")
+                        print(f"  [SANITY] Skipping this model — its unknown "
+                              f"attack numbers would be invalid.")
+                        continue
+                else:
+                    print(f"  [SANITY] skipped (no feature/label columns "
+                          f"in {test_csv.name})")
+            else:
+                print(f"  [SANITY] skipped (test csv or result.json absent)")
+        except Exception as e:
+            print(f"  [SANITY] check could not run: {e}")
+
         # Prepare unknown attack features
         unk_feat_cols = [c for c in feat_cols if c in unk_df.columns]
         if not unk_feat_cols:
             print(f"  ✗ Feature columns {feat_cols} not found in unknown CSV"); continue
+        missing_cols = [c for c in feat_cols if c not in unk_df.columns]
+        if missing_cols:
+            print(f"  *** WARNING: unknown.csv is missing {missing_cols}")
+            print(f"      Using only {unk_feat_cols} — feature order will")
+            print(f"      not match the scaler and predictions will be wrong.")
+            continue
         X_unk = scaler.transform(unk_df[unk_feat_cols].values.astype(np.float32))
 
         # Predict
         probs = predict_proba_cpu(model, X_unk)
         preds = (probs >= tau).astype(int)
+
+        # ── Diagnostic: probability distribution vs threshold ───────────
+        # If detection rate is 0, this shows immediately whether the
+        # probabilities are all below tau (threshold too high for the
+        # unknown distribution) or the model is outputting a constant.
+        print(f"  [PROBS] min={probs.min():.4f}  "
+              f"p25={np.percentile(probs,25):.4f}  "
+              f"median={np.median(probs):.4f}  "
+              f"p75={np.percentile(probs,75):.4f}  "
+              f"max={probs.max():.4f}")
+        print(f"  [PROBS] tau={tau:.4f}  "
+              f"fraction >= tau: {(probs >= tau).mean()*100:.2f}%")
+        if probs.max() < tau:
+            print(f"  [PROBS] ALL probabilities are below tau. Detection "
+                  f"rate is 0 because the threshold optimised on the test")
+            print(f"          set does not transfer to the unknown attack")
+            print(f"          distribution. This is a genuine finding, not "
+                  f"a code error.")
+        if probs.std() < 1e-4:
+            print(f"  [PROBS] *** Probabilities are nearly CONSTANT "
+                  f"(std={probs.std():.2e}) ***")
+            print(f"          The model is not discriminating at all. Check "
+                  f"that the feature columns and scaler are correct.")
 
         # Detection rate per attack subtype
         subtypes = (unk_df[atk_col].astype(str).str.strip()
@@ -256,6 +388,28 @@ def main():
             mask = subtypes == subtype
             row[f"DR_{subtype}"] = round(float(preds[mask].mean()), 4)
         results.append(row)
+
+    # ── Integrity check: did every selected model produce a result? ──
+    sel = set(int(r[jsc_rank_col]) for _, r in jsc.iterrows())
+    got = set(int(r["JSC_Rank"]) for r in results)
+    missing_ranks = sorted(sel - got)
+
+    print(f"\n{'='*70}")
+    print(f"  INTEGRITY CHECK")
+    print(f"{'='*70}")
+    print(f"  Selected from JSC table : {len(sel)}")
+    print(f"  Successfully evaluated  : {len(got)}")
+    if missing_ranks:
+        print(f"\n  *** {len(missing_ranks)} MODEL(S) SKIPPED ***")
+        print(f"  Missing JSC_Rank: {missing_ranks}")
+        for _, r in jsc.iterrows():
+            if int(r[jsc_rank_col]) in missing_ranks:
+                print(f"    Rank {int(r[jsc_rank_col])}: {r[drm_col]}")
+        print(f"\n  Scroll up to the [CKPT] or [SANITY] messages for these")
+        print(f"  models. The reported top-{args.top_n} is INCOMPLETE.")
+    else:
+        print(f"  All selected models evaluated. Selection is complete.")
+    print(f"{'='*70}")
 
     # Save
     if results:
