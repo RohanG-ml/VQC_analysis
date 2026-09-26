@@ -1,0 +1,74 @@
+======================================================================
+  SINGLE-SAMPLE ISOLATION TEST (no batch_input)
+======================================================================
+
+──────────────────────────────────────────────────────────────────────
+Testing: device=default.qubit  diff_method=backprop
+──────────────────────────────────────────────────────────────────────
+  ✗ FAILED: TypeError: Parameter expression with unbound parameters {Symbol { name: "θ", uuid: 667e91bd-8935-48f7-9815-347ef90ca0a8, index: Some(0), vector: Some(Py(0x7ce07efcbb00)) }} is not numeric.
+
+  Full traceback:
+Traceback (most recent call last):
+  File "/home/nvidia/21PHD1192/vqc_v8_single_sample_test.py", line 58, in test_single_sample
+    out = quantum_model(x_one, weights)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/pennylane/workflow/qnode.py", line 880, in __call__
+    return self._impl_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/pennylane/workflow/qnode.py", line 848, in _impl_call
+    tape = self.construct(args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/pennylane/logging/decorators.py", line 61, in wrapper_entry
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/pennylane/workflow/qnode.py", line 835, in construct
+    self._qfunc_output = self.func(*args, **kwargs)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/21PHD1192/vqc_v8_single_sample_test.py", line 51, in quantum_model
+    pl_circuit(x_single, weights)
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/pennylane_qiskit/converter.py", line 581, in _function
+    operation_args = [instruction.to_matrix()]
+                      ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/qiskit/circuit/gate.py", line 60, in to_matrix
+    return self.__array__(dtype=complex)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/qiskit/circuit/library/standard_gates/r.py", line 99, in __array__
+    theta, phi = float(self.params[0]), float(self.params[1])
+                 ^^^^^^^^^^^^^^^^^^^^^
+TypeError: Parameter expression with unbound parameters {Symbol { name: "θ", uuid: 667e91bd-8935-48f7-9815-347ef90ca0a8, index: Some(0), vector: Some(Py(0x7ce07efcbb00)) }} is not numeric.
+
+
+──────────────────────────────────────────────────────────────────────
+Testing: device=lightning.gpu  diff_method=adjoint
+──────────────────────────────────────────────────────────────────────
+  ✗ FAILED: TypeError: Parameter expression with unbound parameters {Symbol { name: "θ", uuid: 324cb7ca-7974-4736-bfc7-98c0bd8ef031, index: Some(0), vector: Some(Py(0x7ce07842e580)) }} is not numeric.
+
+  Full traceback:
+Traceback (most recent call last):
+  File "/home/nvidia/21PHD1192/vqc_v8_single_sample_test.py", line 58, in test_single_sample
+    out = quantum_model(x_one, weights)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/pennylane/workflow/qnode.py", line 880, in __call__
+    return self._impl_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/pennylane/workflow/qnode.py", line 848, in _impl_call
+    tape = self.construct(args, kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/pennylane/logging/decorators.py", line 61, in wrapper_entry
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/pennylane/workflow/qnode.py", line 835, in construct
+    self._qfunc_output = self.func(*args, **kwargs)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/21PHD1192/vqc_v8_single_sample_test.py", line 51, in quantum_model
+    pl_circuit(x_single, weights)
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/pennylane_qiskit/converter.py", line 581, in _function
+    operation_args = [instruction.to_matrix()]
+                      ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/qiskit/circuit/gate.py", line 60, in to_matrix
+    return self.__array__(dtype=complex)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nvidia/miniconda_311/envs/qua/lib/python3.11/site-packages/qiskit/circuit/library/standard_gates/r.py", line 99, in __array__
+    theta, phi = float(self.params[0]), float(self.params[1])
+                 ^^^^^^^^^^^^^^^^^^^^^
+TypeError: Parameter expression with unbound parameters {Symbol { name: "θ", uuid: 324cb7ca-7974-4736-bfc7-98c0bd8ef031, index: Some(0), vector: Some(Py(0x7ce07842e580)) }} is not numeric.
