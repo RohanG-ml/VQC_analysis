@@ -1,0 +1,208 @@
+1) Discussion on why to customise the similar design of ZZFeatureMap and not using qiskit inbuit ZZFeAtureMap
+
+import pennylane as qml
+import torch
+import numpy as np
+from qiskit.circuit.library import ZZFeatureMap
+
+n_qubits = 4
+B = 4
+
+x_batch = torch.tensor(
+    [
+        [0.1, 0.2, 0.3, 0.4],
+        [0.5, 0.6, 0.7, 0.8],
+        [1.1, 1.2, 1.3, 1.4],
+        [1.5, 1.6, 1.7, 1.8],
+    ],
+    dtype=torch.float32,
+)
+
+dev = qml.device("lightning.gpu", wires=n_qubits)
+
+qc = ZZFeatureMap(feature_dimension=n_qubits, reps=1, entanglement="linear")
+qiskit_template = qml.from_qiskit(qc)
+
+pairs = [(0, 1), (1, 2), (2, 3)]
+
+def manual_zz_embedding(x):
+    for i in range(n_qubits):
+        qml.Hadamard(wires=i)
+    for i in range(n_qubits):
+        qml.RZ(2.0 * x[..., i], wires=i)
+    for i, j in pairs:
+        qml.IsingZZ(2.0 * (np.pi - x[..., i]) * (np.pi - x[..., j]), wires=[i, j])
+
+@qml.qnode(dev, interface="torch", diff_method="adjoint")
+def circuit_single_imported(x):
+    qiskit_template(x)
+    return qml.expval(qml.PauliZ(0))
+
+@qml.qnode(dev, interface="torch", diff_method="adjoint")
+def circuit_native_imported_batch(x):
+    qiskit_template(x)
+    return qml.expval(qml.PauliZ(0))
+
+@qml.batch_input(argnum=0)
+@qml.qnode(dev, interface="torch", diff_method="adjoint")
+def circuit_batch_input_imported(x):
+    qiskit_template(x)
+    return qml.expval(qml.PauliZ(0))
+
+@qml.qnode(dev, interface="torch", diff_method="adjoint")
+def circuit_manual_batch(x):
+    manual_zz_embedding(x)
+    return qml.expval(qml.PauliZ(0))
+
+ref = torch.stack([circuit_single_imported(x_batch[i]) for i in range(B)])
+
+print("ref.shape =", tuple(ref.shape))
+print("ref       =", ref)
+
+out_native = torch.as_tensor(circuit_native_imported_batch(x_batch))
+print("native.shape =", tuple(out_native.shape))
+print("native       =", out_native)
+
+out_bi = torch.as_tensor(circuit_batch_input_imported(x_batch))
+print("batch_input.shape =", tuple(out_bi.shape))
+print("batch_input       =", out_bi)
+print("max |batch_input - ref| =",
+      (out_bi.reshape(-1) - ref.reshape(-1)).abs().max().item())
+
+out_manual = torch.as_tensor(circuit_manual_batch(x_batch))
+print("manual.shape =", tuple(out_manual.shape))
+print("manual       =", out_manual)
+print("max |manual - ref| =",
+      (out_manual.reshape(-1) - ref.reshape(-1)).abs().max().item())
+
+
+See the output Below
+
+PennyLane version: 0.44.0
+Qiskit API used: zz_feature_map function
+Imported with qml.from_qiskit
+Backend: lightning.gpu | diff_method: adjoint
+
+[TEST 1] Single-sample imported Qiskit ZZ
+ref.shape = (4,)
+ref       = tensor([0.0000e+00, 0.0000e+00, 0.0000e+00, 1.1102e-16])
+
+[TEST 2] Native batched imported Qiskit ZZ
+native batching failed with: TypeError('Cannot assign object (tensor([0.1000, 0.2000, 0.3000, 0.4000])) object to parameter.')
+
+[TEST 3] qml.batch_input wrapped imported Qiskit ZZ
+batch_input failed with: TypeError('Cannot assign object (tensor([0.1000, 0.2000, 0.3000, 0.4000])) object to parameter.')
+
+[TEST 4] Manual batched ZZ
+manual.shape = (4,)
+manual       = tensor([1.1102e-16, 0.0000e+00, 0.0000e+00, 5.5511e-17])
+max |manual - ref| = 1.1102230246251565e-16
+
+
+conclusion
+
+from teh output we can see that
+
+qml.batch_input itself is fine,
+but the parameter-binding step of the imported Qiskit template is what is failing first.
+
+The PennyLane-Qiskit converter says converted Qiskit templates accept parameter values as positional args, keyword args matching parameter names, or a parameter dictionary, and it explicitly groups ParameterVector elements back into a vector-like parameter object. It also notes that a ParameterVector is expected as a single argument containing all its elements.
+
+the failure is not batching used in PennyLane. 
+
+It is more likely:
+the imported zz_feature_map template is rejecting the tensor object during Qiskit-style parameter assignment before the batched execution can proceed.
+
+That matches exact error:
+Cannot assign object (tensor([...])) object to parameter.
+
+		______________*******_______________
+
+2) Discussion on why to customise the similar design of IQPEmbedding and not using pennylane IQPEmbedding. we used the following part of the code instead of IQPstyle encoding
+
+def iqp_embedding(
+        self,
+        x,
+        pattern=None
+    ):
+
+        qml.IQPEmbedding(
+            features=x,
+            wires=range(self.n_qubits),
+            n_repeats=self.reps,
+            pattern=pattern
+        )
+
+
+
+for IQP embedding form encoding layer got the following error during the training
+
+---------------------------------------------------------------------------
+ValueError                                Traceback (most recent call last)
+Cell In[20], line 15
+      1 # X_train, y_train, X_test, y_test must already exist
+      2 # X_* shape: (N, 4), y_* in {0,1}
+      4 model = PureVQC_PL(
+      5     n_qubits=4,
+      6     enc_reps=1,
+   (...)     12     init_zero=True
+     13 )
+---> 15 trained_model = train_vqc_binary_torch(
+     16     model,
+     17     X_train, y_train,
+     18     X_test, y_test,
+     19     epochs=1,
+     20     batch_size=64,
+     21     lr=1e-3,
+     22     device="cpu",
+     23     eval_every=1
+     24 )
+
+Cell In[13], line 37, in train_vqc_binary_torch(model, X_train, y_train, X_val, y_val, epochs, batch_size, lr, device, eval_every)
+     35 opt.zero_grad()
+     36 probs = model(xb)
+---> 37 loss = loss_fn(probs, yb)
+     38 loss.backward()
+     39 opt.step()
+
+File ~/Rohan/quantum/lib/python3.12/site-packages/torch/nn/modules/module.py:1776, in Module._wrapped_call_impl(self, *args, **kwargs)
+   1774     return self._compiled_call_impl(*args, **kwargs)  # type: ignore[misc]
+   1775 else:
+-> 1776     return self._call_impl(*args, **kwargs)
+
+File ~/Rohan/quantum/lib/python3.12/site-packages/torch/nn/modules/module.py:1787, in Module._call_impl(self, *args, **kwargs)
+   1782 # If we don't have any hooks, we want to skip the rest of the logic in
+   1783 # this function, and just call forward.
+   1784 if not (self._backward_hooks or self._backward_pre_hooks or self._forward_hooks or self._forward_pre_hooks
+   1785         or _global_backward_pre_hooks or _global_backward_hooks
+   1786         or _global_forward_hooks or _global_forward_pre_hooks):
+-> 1787     return forward_call(*args, **kwargs)
+   1789 result = None
+   1790 called_always_called_hooks = set()
+
+File ~/Rohan/quantum/lib/python3.12/site-packages/torch/nn/modules/loss.py:710, in BCELoss.forward(self, input, target)
+    706 def forward(self, input: Tensor, target: Tensor) -> Tensor:
+    707     """
+    708     Runs the forward pass.
+    709     """
+--> 710     return F.binary_cross_entropy(
+    711         input, target, weight=self.weight, reduction=self.reduction
+    712     )
+
+File ~/Rohan/quantum/lib/python3.12/site-packages/torch/nn/functional.py:3564, in binary_cross_entropy(input, target, weight, size_average, reduce, reduction)
+   3562     reduction_enum = _Reduction.get_enum(reduction)
+   3563 if target.size() != input.size():
+-> 3564     raise ValueError(
+   3565         f"Using a target size ({target.size()}) that is different to the input size ({input.size()}) is deprecated. "
+   3566         "Please ensure they have the same size."
+   3567     )
+   3569 if weight is not None:
+   3570     new_size = _infer_size(target.size(), weight.size())
+
+ValueError: Using a target size (torch.Size([64, 1])) that is different to the input size (torch.Size([4096, 1])) is deprecated. Please ensure they have the same size.
+
+
+
+This error is happening because PennyLane’s built-in qml.IQPEmbedding is not broadcast-safe the way we are batching x
+
+Hence to continue using batching for all other encodings and not disturb it by creating separate batching for IQP decided to replace the built-in IQPEmbedding with a manual IQP, and keeping same architecture as IQP Embedding with 4 qubits.
